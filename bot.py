@@ -73,9 +73,9 @@ class OzonSellerAPI:
             logger.info("🔍 Получаем цены через v5/product/info/prices...")
             prices_data = self._get_products_prices_v5(product_ids)
         
-            # 4. Получаем остатки через v4/product/info/prices (альтернативный метод)
+            # 4. Получаем остатки через v4/product/info/stocks (исправлено название метода)
             logger.info("🔍 Получаем остатки через альтернативный метод...")
-            s_data = self._get_products_stocks_alternative(product_ids)
+            stocks_data = self._get_products_stocks_alternative(product_ids)  # Исправлено: stocks_data вместо s_data
         
             # Формируем итоговый список товаров
             products = []
@@ -102,8 +102,8 @@ class OzonSellerAPI:
                         logger.warning(f"⚠️ Пропускаем товар без цены: {name}")
                         continue
                 
-                    # Получаем количество
-                    quantity = self._extract_quantity(stocks_data.get(product_id, {}))
+                    # Получаем количество (исправлено: stocks_data вместо неопределенной переменной)
+                    quantity = self._extract_quantity(stocks_data.get(product_id, {}))  # Исправлено: stocks_data
                     logger.info(f"📦 Итоговое количество для {name}: {quantity}")
                 
                     # Очищаем описание от HTML тегов и обрезаем
@@ -255,14 +255,14 @@ class OzonSellerAPI:
             return 0
 
     def _get_products_stocks_alternative(self, product_ids):
-        """Альтернативный метод получения остатков через v2/product/info/list"""
+        """Альтернативный метод получения остатков через v2/products/stocks"""
         stocks_data = {}
         
         if not product_ids:
             return stocks_data
             
         try:
-            # Используем v2/product/info/list который обычно работает
+            # Используем v2/products/stocks который обычно работает
             for i in range(0, len(product_ids), 50):
                 batch_ids = product_ids[i:i+50]
                 
@@ -468,13 +468,6 @@ async def refresh_products_callback(query, context):
         
         await query.edit_message_text(error_text, reply_markup=reply_markup, parse_mode='Markdown')
 
-async def handle_cart_action(query, context, callback_data):
-    """Обрабатывает действия с корзиной"""
-    if callback_data == "checkout":
-        await checkout(query, context)
-    elif callback_data == "clear_cart":
-        await clear_cart(query, context)
-
 async def load_real_products():
     """Загружает только реальные товары из Ozon API"""
     global products_cache
@@ -612,6 +605,13 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await handle_product_action(query, context, callback_data)
     elif callback_data.startswith("cart_"):
         await handle_cart_action(query, context, callback_data)
+
+async def handle_cart_action(query, context, callback_data):
+    """Обрабатывает действия с корзиной"""
+    if callback_data == "checkout":
+        await checkout(query, context)
+    elif callback_data == "clear_cart":
+        await clear_cart(query, context)
 
 async def show_products(query, context):
     """Показывает список реальных товаров"""
