@@ -4,8 +4,6 @@ import re
 import asyncio
 import datetime
 import logging
-import uuid
-from urllib.parse import urlencode
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ContextTypes
 
@@ -23,7 +21,6 @@ OZON_CLIENT_ID = os.environ.get('OZON_CLIENT_ID')
 
 # Кэш товаров
 products_cache = {}
-current_product_index = {}
 
 class OzonSellerAPI:
     def __init__(self):
@@ -75,7 +72,7 @@ class OzonSellerAPI:
             logger.info("🔍 Получаем цены через v5/product/info/prices...")
             prices_data = self._get_products_prices_v5(product_ids)
         
-            # 4. Получаем остатки через v4/product/info/stocks
+            # 4. Получаем остатки
             logger.info("🔍 Получаем остатки через альтернативный метод...")
             stocks_data = self._get_products_stocks_alternative(product_ids)
         
@@ -149,7 +146,6 @@ class OzonSellerAPI:
             return descriptions_data
             
         try:
-            # Обрабатываем каждый product_id отдельно
             for product_id in product_ids:
                 description_response = requests.post(
                     "https://api-seller.ozon.ru/v1/product/info/description",
@@ -184,7 +180,6 @@ class OzonSellerAPI:
             return prices_data
             
         try:
-            # Разбиваем на группы по 50 product_id
             for i in range(0, len(product_ids), 50):
                 batch_ids = product_ids[i:i+50]
             
@@ -232,7 +227,6 @@ class OzonSellerAPI:
             if not isinstance(price_info, dict):
                 return 0
         
-            # Основная цена
             main_price = price_info.get('price')
             if main_price:
                 price_int = int(float(main_price))
@@ -240,7 +234,6 @@ class OzonSellerAPI:
                     logger.info(f"✅ Найдена цена: {price_int} ₽")
                     return price_int
         
-            # Старая цена как запасной вариант
             old_price = price_info.get('old_price')
             if old_price:
                 price_int = int(float(old_price))
@@ -283,8 +276,6 @@ class OzonSellerAPI:
                             stock = item.get('stock', 0)
                             fbo_stock = item.get('fbo_stock', 0)
                             fbs_stock = item.get('fbs_stock', 0)
-                            
-                            logger.info(f"📊 Товар {product_id}: stock={stock}, fbo_stock={fbo_stock}, fbs_stock={fbs_stock}")
                             
                             available_stock = max(
                                 int(stock) if stock else 0,
@@ -341,61 +332,40 @@ class OzonSellerAPI:
         
         return clean_text
 
-    def create_ozon_cart_url(self, cart_items):
-        """Создает ссылку для добавления товаров в корзину Ozon"""
-        try:
-            # Формируем параметры для ссылки на корзину Ozon
-            cart_params = []
-            
-            for product_index, quantity in cart_items.items():
-                product = products_cache.get(int(product_index))
-                if product and product.get('ozon_id'):
-                    # Добавляем товар в параметры корзины
-                    cart_params.append({
-                        'id': product['ozon_id'],
-                        'quantity': quantity
-                    })
-            
-            if not cart_params:
-                return None
-            
-            # Создаем уникальный идентификатор корзины
-            cart_id = str(uuid.uuid4())[:8]
-            
-            # Формируем URL для корзины Ozon
-            base_url = "https://www.ozon.ru/cart"
-            
-            # Если только один товар, используем простую ссылку
-            if len(cart_params) == 1:
-                product_id = cart_params[0]['id']
-                quantity = cart_params[0]['quantity']
-                return f"{base_url}?productId={product_id}&quantity={quantity}"
-            else:
-                # Для нескольких товаров формируем сложную ссылку
-                items_param = ",".join([f"{item['id']}:{item['quantity']}" for item in cart_params])
-                return f"{base_url}?items={items_param}"
-                
-        except Exception as e:
-            logger.error(f"❌ Ошибка создания ссылки на корзину Ozon: {e}")
-            return "https://www.ozon.ru/cart"
+    def create_product_links(self, cart_items):
+        """Создает ссылки на страницы товаров Ozon"""
+        product_links = []
+        
+        for product_index, quantity in cart_items.items():
+            product = products_cache.get(int(product_index))
+            if product and product.get('product_id'):
+                # Создаем ссылку на страницу товара в Ozon
+                product_url = f"https://www.ozon.ru/product/{product['product_id']}/"
+                product_links.append({
+                    'name': product['name'],
+                    'url': product_url,
+                    'quantity': quantity,
+                    'price': product['price']
+                })
+        
+        return product_links
 
 # Инициализация API
 ozon_api = OzonSellerAPI()
 
 async def checkout(query, context):
-    """Перенаправляет в корзину Ozon для оформления заказа"""
-    # Получаем корзину из user_data
+    """Создает список товаров с ссылками для ручного добавления в корзину"""
     cart = context.user_data.get('cart', {})
     
     if not cart:
         await query.answer("❌ Корзина пуста", show_alert=True)
         return
     
-    # Создаем ссылку для корзины Ozon
-    ozon_cart_url = ozon_api.create_ozon_cart_url(cart)
+    # Создаем ссылки на товары
+    product_links = ozon_api.create_product_links(cart)
     
-    if not ozon_cart_url:
-        await query.answer("❌ Ошибка создания ссылки на корзину", show_alert=True)
+    if not product_links:
+        await query.answer("❌ Ошибка создания ссылок на товары", show_alert=True)
         return
     
     # Считаем общую сумму и количество товаров
@@ -403,16 +373,61 @@ async def checkout(query, context):
     items_count = 0
     cart_items_text = ""
     
-    for product_index, quantity in cart.items():
-        product = products_cache.get(int(product_index))
-        if product:
-            item_total = product['price'] * quantity
-            total += item_total
-            items_count += quantity
-            product_name = product['name']
-            if len(product_name) > 30:
-                product_name = product_name[:27] + "..."
-            cart_items_text += f"• {product_name} - {quantity} шт.\n"
+    for link_info in product_links:
+        item_total = link_info['price'] * link_info['quantity']
+        total += item_total
+        items_count += link_info['quantity']
+        product_name = link_info['name']
+        if len(product_name) > 30:
+            product_name = product_name[:27] + "..."
+        cart_items_text += f"• {product_name} - {link_info['quantity']} шт. = {item_total} ₽\n"
+
+    # Формируем инструкцию
+    instruction_text = """
+📋 *Инструкция по оформлению заказа:*
+
+1. *Поочередно перейдите по ссылкам ниже*
+2. *На каждой странице товара:*
+   - Нажмите кнопку «В корзину»
+   - Установите нужное количество
+3. *После добавления всех товаров:*
+   - Перейдите в корзину Ozon
+   - Завершите оформление заказа
+
+🛒 *Ссылки на товары:*
+"""
+
+    # Создаем сообщение со ссылками
+    message_text = f"""
+✅ *Ваш заказ готов к оформлению!*
+
+{cart_items_text}
+💰 *Общая сумма:* {total} ₽
+📊 *Всего товаров:* {items_count} шт.
+
+{instruction_text}
+"""
+    
+    # Создаем клавиатуру со ссылками на товары
+    keyboard = []
+    for i, link_info in enumerate(product_links, 1):
+        product_name = link_info['name']
+        if len(product_name) > 30:
+            product_name = product_name[:27] + "..."
+        keyboard.append([InlineKeyboardButton(
+            f"📦 {i}. {product_name} ({link_info['quantity']} шт.)", 
+            url=link_info['url']
+        )])
+    
+    # Добавляем вспомогательные кнопки
+    keyboard.extend([
+        [InlineKeyboardButton("🛒 Перейти в корзину Ozon", url="https://www.ozon.ru/cart")],
+        [InlineKeyboardButton("📦 Мои заказы", callback_data="view_orders")],
+        [InlineKeyboardButton("🛍️ Продолжить покупки", callback_data="view_products"),
+         InlineKeyboardButton("🗑️ Очистить корзину", callback_data="clear_cart")]
+    ])
+    
+    reply_markup = InlineKeyboardMarkup(keyboard)
     
     # Сохраняем заказ в историю
     if 'orders' not in context.user_data:
@@ -423,36 +438,13 @@ async def checkout(query, context):
         'items_count': items_count,
         'created_at': datetime.datetime.now().strftime("%d.%m.%Y %H:%M"),
         'customer_name': query.from_user.first_name,
-        'status': 'перенаправлен в Ozon'
+        'status': 'ожидает оформления в Ozon',
+        'product_links': product_links
     }
     
     context.user_data['orders'].append(new_order)
     
-    success_text = f"""
-✅ *Товары добавлены в корзину Ozon!*
-
-📦 *Состав заказа:*
-{cart_items_text}
-💰 *Общая сумма:* {total} ₽
-📊 *Всего товаров:* {items_count} шт.
-
-🛒 *Для завершения покупки:*
-1. Нажмите кнопку «Перейти к оформлению в Ozon»
-2. В корзине Ozon проверьте товары
-3. Завершите оформление заказа
-
-⚠️ *Внимание:* Заказ будет обработан через официальный сайт Ozon
-"""
-    
-    keyboard = [
-        [InlineKeyboardButton("🛒 Перейти к оформлению в Ozon", url=ozon_cart_url)],
-        [InlineKeyboardButton("📦 Мои заказы", callback_data="view_orders")],
-        [InlineKeyboardButton("🛍️ Продолжить покупки", callback_data="view_products"),
-         InlineKeyboardButton("🗑️ Очистить корзину", callback_data="clear_cart")]
-    ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
-    
-    await query.edit_message_text(success_text, reply_markup=reply_markup, parse_mode='Markdown')
+    await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def clear_cart(query, context):
     """Очищает корзину полностью"""
@@ -464,51 +456,6 @@ async def clear_cart(query, context):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     await query.edit_message_text("🗑️ *Корзина очищена*", reply_markup=reply_markup, parse_mode='Markdown')
-
-async def refresh_products_callback(query, context):
-    """Обновляет товары через callback"""
-    await query.edit_message_text("🔄 Обновляем список товаров...")
-    
-    products_count_before = len(products_cache)
-    await load_real_products()
-    products_count_after = len(products_cache)
-    
-    if products_count_after > 0:
-        success_text = f"""
-✅ *Товары обновлены!*
-
-📦 Было товаров: {products_count_before}
-📦 Стало товаров: {products_count_after}
-
-Список товаров актуален на текущий момент.
-"""
-        
-        keyboard = [
-            [InlineKeyboardButton("🛍️ Смотреть товары", callback_data="view_products")],
-            [InlineKeyboardButton("🛒 Корзина", callback_data="view_cart")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(success_text, reply_markup=reply_markup, parse_mode='Markdown')
-    else:
-        error_text = """
-❌ *Не удалось обновить товары*
-
-Возможные причины:
-• Проблемы с подключением к Ozon API
-• Неверные настройки API ключей
-• Временные неполадки на стороне Ozon
-
-Попробуйте позже или проверьте настройки.
-"""
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 Попробовать снова", callback_data="refresh_products")],
-            [InlineKeyboardButton("🛍️ Использовать текущий список", callback_data="view_products")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(error_text, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def load_real_products():
     """Загружает только реальные товары из Ozon API"""
@@ -549,11 +496,10 @@ async def load_real_products():
             product_key = product_counter
             
             products[product_key] = {
-                'ozon_id': product_id,
+                'product_id': product_id,
                 'offer_id': offer_id,
                 'name': name,
                 'price': price,
-                'image': "📦",
                 'description': description,
                 'quantity': quantity
             }
@@ -581,10 +527,12 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📊 Реальные товары из вашего Ozon магазина
 📦 Доступно товаров: {len(products_cache)}
 
-🛒 *Новая функция:* Теперь товары добавляются в реальную корзину Ozon!
-• Выбирайте товары в боте
-• Переходите в корзину Ozon для оформления
-• Завершайте покупку на официальном сайте
+🛒 *Как работает оформление заказа:*
+1. Выбирайте товары в боте
+2. Добавляйте в корзину
+3. Получайте ссылки на страницы товаров Ozon
+4. Самостоятельно добавляйте товары в корзину Ozon
+5. Завершайте покупку на официальном сайте
 
 Используйте кнопки ниже для навигации:
 """
@@ -600,23 +548,47 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
-async def refresh_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Обработчик команды /refresh"""
-    await update.message.reply_text("🔄 Обновляем список реальных товаров...")
+# ... (остальные функции остаются без изменений: refresh_products_callback, handle_callback, show_products, show_product_detail, handle_product_action, add_to_cart, show_cart, show_orders, preload_products, main)
+
+async def refresh_products_callback(query, context):
+    """Обновляет товары через callback"""
+    await query.edit_message_text("🔄 Обновляем список товаров...")
+    
     products_count_before = len(products_cache)
     await load_real_products()
     products_count_after = len(products_cache)
     
     if products_count_after > 0:
-        await update.message.reply_text(
-            f"✅ Реальные товары обновлены!\n"
-            f"📦 Доступно товаров: {products_count_after}"
-        )
+        success_text = f"""
+✅ *Товары обновлены!*
+
+📦 Было товаров: {products_count_before}
+📦 Стало товаров: {products_count_after}
+
+Список товаров актуален на текущий момент.
+"""
+        
+        keyboard = [
+            [InlineKeyboardButton("🛍️ Смотреть товары", callback_data="view_products")],
+            [InlineKeyboardButton("🛒 Корзина", callback_data="view_cart")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(success_text, reply_markup=reply_markup, parse_mode='Markdown')
     else:
-        await update.message.reply_text(
-            "❌ Не удалось загрузить реальные товары.\n"
-            "Проверьте настройки API ключей Ozon."
-        )
+        error_text = """
+❌ *Не удалось обновить товары*
+
+Попробуйте позже или проверьте настройки API.
+"""
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Попробовать снова", callback_data="refresh_products")],
+            [InlineKeyboardButton("🛍️ Использовать текущий список", callback_data="view_products")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(error_text, reply_markup=reply_markup, parse_mode='Markdown')
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик callback запросов от кнопок"""
@@ -639,22 +611,12 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await clear_cart(query, context)    
     elif callback_data.startswith("product_"):
         await handle_product_action(query, context, callback_data)
-    elif callback_data.startswith("cart_"):
-        await handle_cart_action(query, context, callback_data)
-
-async def handle_cart_action(query, context, callback_data):
-    """Обрабатывает действия с корзиной"""
-    if callback_data == "checkout":
-        await checkout(query, context)
-    elif callback_data == "clear_cart":
-        await clear_cart(query, context)
 
 async def show_products(query, context):
     """Показывает список реальных товаров"""
     if not products_cache:
         await query.edit_message_text(
-            "❌ Нет доступных товаров.\n"
-            "Используйте /refresh для загрузки товаров из Ozon."
+            "❌ Нет доступных товаров.\nИспользуйте /refresh для загрузки товаров из Ozon."
         )
         return
     
@@ -736,7 +698,7 @@ async def add_to_cart(query, context, product_index):
     await query.answer(f"✅ {product_name} добавлен в корзину!", show_alert=True)
 
 async def show_cart(query, context):
-    """Показывает корзину пользователя с возможностью перехода в Ozon"""
+    """Показывает корзину пользователя"""
     cart = context.user_data.get('cart', {})
     
     if not cart:
@@ -766,11 +728,8 @@ async def show_cart(query, context):
     cart_text += f"\n💵 *Итого:* {total} ₽"
     cart_text += "\n\n🛒 *Для оформления заказа нажмите кнопку ниже*"
     
-    # Создаем ссылку для корзины Ozon
-    ozon_cart_url = ozon_api.create_ozon_cart_url(cart)
-    
     keyboard = [
-        [InlineKeyboardButton("💰 Оформить заказ в Ozon", url=ozon_cart_url)],
+        [InlineKeyboardButton("💰 Оформить заказ", callback_data="checkout")],
         [InlineKeyboardButton("🛍️ Продолжить покупки", callback_data="view_products"),
          InlineKeyboardButton("🗑️ Очистить корзину", callback_data="clear_cart")]
     ]
