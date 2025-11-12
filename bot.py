@@ -244,7 +244,7 @@ class OzonSellerAPI:
             return 0
         
         except Exception as e:
-            logger.error(f"❌ Ошибка извлечения цены: {e}")
+            logger.error(f"❌ Ошибка извлечения цена: {e}")
             return 0
 
     def _get_products_stocks_alternative(self, product_ids):
@@ -457,6 +457,46 @@ async def clear_cart(query, context):
     
     await query.edit_message_text("🗑️ *Корзина очищена*", reply_markup=reply_markup, parse_mode='Markdown')
 
+async def refresh_products_callback(query, context):
+    """Обновляет товары через callback"""
+    await query.edit_message_text("🔄 Обновляем список товаров...")
+    
+    products_count_before = len(products_cache)
+    await load_real_products()
+    products_count_after = len(products_cache)
+    
+    if products_count_after > 0:
+        success_text = f"""
+✅ *Товары обновлены!*
+
+📦 Было товаров: {products_count_before}
+📦 Стало товаров: {products_count_after}
+
+Список товаров актуален на текущий момент.
+"""
+        
+        keyboard = [
+            [InlineKeyboardButton("🛍️ Смотреть товары", callback_data="view_products")],
+            [InlineKeyboardButton("🛒 Корзина", callback_data="view_cart")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(success_text, reply_markup=reply_markup, parse_mode='Markdown')
+    else:
+        error_text = """
+❌ *Не удалось обновить товары*
+
+Попробуйте позже или проверьте настройки API.
+"""
+        
+        keyboard = [
+            [InlineKeyboardButton("🔄 Попробовать снова", callback_data="refresh_products")],
+            [InlineKeyboardButton("🛍️ Использовать текущий список", callback_data="view_products")]
+        ]
+        reply_markup = InlineKeyboardMarkup(keyboard)
+        
+        await query.edit_message_text(error_text, reply_markup=reply_markup, parse_mode='Markdown')
+
 async def load_real_products():
     """Загружает только реальные товары из Ozon API"""
     global products_cache
@@ -548,47 +588,24 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     await update.message.reply_text(welcome_text, reply_markup=reply_markup)
 
-# ... (остальные функции остаются без изменений: refresh_products_callback, handle_callback, show_products, show_product_detail, handle_product_action, add_to_cart, show_cart, show_orders, preload_products, main)
-
-async def refresh_products_callback(query, context):
-    """Обновляет товары через callback"""
-    await query.edit_message_text("🔄 Обновляем список товаров...")
-    
+# ДОБАВЛЯЕМ НЕДОСТАЮЩУЮ ФУНКЦИЮ refresh_products
+async def refresh_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Обработчик команды /refresh для обновления товаров"""
+    await update.message.reply_text("🔄 Обновляем список реальных товаров...")
     products_count_before = len(products_cache)
     await load_real_products()
     products_count_after = len(products_cache)
     
     if products_count_after > 0:
-        success_text = f"""
-✅ *Товары обновлены!*
-
-📦 Было товаров: {products_count_before}
-📦 Стало товаров: {products_count_after}
-
-Список товаров актуален на текущий момент.
-"""
-        
-        keyboard = [
-            [InlineKeyboardButton("🛍️ Смотреть товары", callback_data="view_products")],
-            [InlineKeyboardButton("🛒 Корзина", callback_data="view_cart")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(success_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.message.reply_text(
+            f"✅ Реальные товары обновлены!\n"
+            f"📦 Доступно товаров: {products_count_after}"
+        )
     else:
-        error_text = """
-❌ *Не удалось обновить товары*
-
-Попробуйте позже или проверьте настройки API.
-"""
-        
-        keyboard = [
-            [InlineKeyboardButton("🔄 Попробовать снова", callback_data="refresh_products")],
-            [InlineKeyboardButton("🛍️ Использовать текущий список", callback_data="view_products")]
-        ]
-        reply_markup = InlineKeyboardMarkup(keyboard)
-        
-        await query.edit_message_text(error_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await update.message.reply_text(
+            "❌ Не удалось загрузить реальные товары.\n"
+            "Проверьте настройки API ключей Ozon."
+        )
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик callback запросов от кнопок"""
@@ -788,8 +805,9 @@ def main():
     
     application = Application.builder().token(BOT_TOKEN).build()
     
+    # Обработчики команд
     application.add_handler(CommandHandler("start", start))
-    application.add_handler(CommandHandler("refresh", refresh_products))
+    application.add_handler(CommandHandler("refresh", refresh_products))  # Теперь эта функция определена
     application.add_handler(CallbackQueryHandler(handle_callback))
     
     logger.info("🔄 Загрузка реальных товаров из Ozon...")
