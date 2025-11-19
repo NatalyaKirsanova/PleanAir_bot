@@ -77,9 +77,9 @@ class OzonSellerAPI:
             logger.info("🔍 Получаем цены через v5/product/info/prices...")
             prices_data = self._get_products_prices_v5(product_ids)
             
-            # 3. Получаем описания товаров через v2/product/info/list
-            logger.info("🔍 Получаем описания товаров...")
-            descriptions_data = self._get_products_descriptions_v2(product_ids)
+            # 3. Получаем описания товаров через v1/product/info/description
+            logger.info("🔍 Получаем описания товаров через v1/product/info/description...")
+            descriptions_data = self._get_products_descriptions_v1(product_ids)
         
             # Формируем итоговый список товаров
             products = []
@@ -91,10 +91,19 @@ class OzonSellerAPI:
                     if not product_id:
                         continue
                 
-                    # Получаем название товара из описаний
+                    # Получаем название и описание товара
                     product_info = descriptions_data.get(product_id, {})
                     name = product_info.get('name', offer_id or f"Товар {product_id}")
-                    description = product_info.get('description', f"Артикул: {offer_id}")
+                    description = product_info.get('description', '')
+                    
+                    # Если нет описания, используем название товара
+                    if not description:
+                        description = name
+                    else:
+                        # Очищаем описание от HTML тегов и обрезаем если слишком длинное
+                        description = self._clean_description(description)
+                        if len(description) > 200:
+                            description = description[:197] + "..."
                 
                     # Получаем реальную цену из v5
                     price = self._extract_price_from_v5(prices_data.get(product_id, {}))
@@ -177,53 +186,56 @@ class OzonSellerAPI:
             logger.error(f"❌ Ошибка получения цен v5: {e}")
             return {}
     
-    def _get_products_descriptions_v2(self, product_ids):
-        """Получает описания товаров через v2/product/info/list"""
+    def _get_products_descriptions_v1(self, product_ids):
+        """Получает описания товаров через v1/product/info/description"""
         descriptions_data = {}
         
         if not product_ids:
             return descriptions_data
             
         try:
-            for i in range(0, len(product_ids), 10):
-                batch_ids = product_ids[i:i+10]
-            
-                info_response = requests.post(
-                    "https://api-seller.ozon.ru/v2/product/info/list",
+            for product_id in product_ids:
+                description_response = requests.post(
+                    "https://api-seller.ozon.ru/v1/product/info/description",
                     headers=self.headers,
-                    json={
-                        "product_id": batch_ids
-                    },
+                    json={"product_id": product_id},
                     timeout=10
                 )
-            
-                if info_response.status_code == 200:
-                    info_result = info_response.json()
-                    items = info_result.get('result', {}).get('items', [])
-                    logger.info(f"📝 Получены описания для {len(items)} товаров")
                 
-                    for item in items:
-                        product_id = item.get('id')
-                        if product_id:
-                            name = item.get('name', '')
-                            description = item.get('description', '')
-                            
-                            # Если описание слишком длинное, обрезаем его
-                            if description and len(description) > 200:
-                                description = description[:197] + "..."
-                            
-                            descriptions_data[product_id] = {
-                                'name': name,
-                                'description': description
-                            }
+                if description_response.status_code == 200:
+                    description_result = description_response.json().get('result', {})
+                    if description_result:
+                        name = description_result.get('name', '')
+                        description = description_result.get('description', '')
+                        
+                        descriptions_data[product_id] = {
+                            'name': name,
+                            'description': description
+                        }
+                        logger.info(f"📝 Получено описание для товара {product_id}")
                 else:
-                    logger.warning(f"⚠️ Ошибка получения описаний v2: {info_response.status_code}")
-        
+                    logger.warning(f"⚠️ Ошибка получения описания для {product_id}: {description_response.status_code}")
+            
+            logger.info(f"📝 Всего получено описаний: {len(descriptions_data)}")
             return descriptions_data
-        
+            
         except Exception as e:
-            logger.error(f"❌ Ошибка получения описаний v2: {e}")
+            logger.error(f"❌ Ошибка получения описаний: {e}")
             return {}
+    
+    def _clean_description(self, description):
+        """Очищает описание от HTML тегов"""
+        if not description:
+            return ""
+        
+        # Удаляем основные HTML теги
+        import re
+        clean_text = re.sub(r'<br\s*/?>', '\n', description)
+        clean_text = re.sub(r'<[^>]+>', '', clean_text)
+        clean_text = re.sub(r'\n\s*\n', '\n', clean_text)
+        clean_text = clean_text.strip()
+        
+        return clean_text
     
     def _extract_price_from_v5(self, price_item):
         """Извлекает цену из структуры Ozon v5"""
