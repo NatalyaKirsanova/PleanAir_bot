@@ -200,7 +200,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 📊 Реальные товары из вашего Ozon магазина
 📦 Доступно товаров: {len(products_cache)}
 
-🛒 *Как работает бот:*
+🛒 Как работает бот:
 1. Выбирайте товары в боте
 2. Добавляйте в корзину
 3. Получайте ссылки на поиск товаров в Ozon
@@ -245,7 +245,7 @@ async def refresh_products_callback(query, context):
     
     if products_count_after > 0:
         success_text = f"""
-✅ *Товары обновлены!*
+✅ Товары обновлены!
 
 📦 Было товаров: {products_count_before}
 📦 Стало товаров: {products_count_after}
@@ -259,10 +259,10 @@ async def refresh_products_callback(query, context):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(success_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text(success_text, reply_markup=reply_markup)
     else:
         error_text = """
-❌ *Не удалось обновить товары*
+❌ Не удалось обновить товары
 
 Проверьте настройки API ключей Ozon.
 """
@@ -273,7 +273,7 @@ async def refresh_products_callback(query, context):
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(error_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text(error_text, reply_markup=reply_markup)
 
 async def show_products(query, context):
     """Показывает список реальных товаров"""
@@ -292,13 +292,14 @@ async def show_product_detail(query, context, product_index):
         await query.edit_message_text("❌ Товар не найден")
         return
     
+    # Убираем Markdown форматирование для избежания ошибок
     product_text = f"""
-📦 *{product['name']}*
+📦 {product['name']}
 
-💵 *Цена:* {product['price']} ₽
-📝 *Описание:* {product['description']}
-📦 *В наличии:* {product['quantity']} шт.
-🔗 *Артикул:* {product['offer_id']}
+💵 Цена: {product['price']} ₽
+📝 Описание: {product['description']}
+📦 В наличии: {product['quantity']} шт.
+🔗 Артикул: {product['offer_id']}
 
 Выберите действие:
 """
@@ -313,7 +314,7 @@ async def show_product_detail(query, context, product_index):
     reply_markup = InlineKeyboardMarkup(keyboard)
     
     try:
-        await query.edit_message_text(product_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text(product_text, reply_markup=reply_markup)
     except Exception as e:
         if "Message is not modified" not in str(e):
             raise e
@@ -365,14 +366,14 @@ async def show_cart(query, context):
     cart = context.user_data.get('cart', {})
     
     if not cart:
-        cart_text = "🛒 *Ваша корзина пуста*"
+        cart_text = "🛒 Ваша корзина пуста"
         
         keyboard = [
             [InlineKeyboardButton("🛍️ Начать покупки", callback_data="view_products")]
         ]
         reply_markup = InlineKeyboardMarkup(keyboard)
         
-        await query.edit_message_text(cart_text, reply_markup=reply_markup, parse_mode='Markdown')
+        await query.edit_message_text(cart_text, reply_markup=reply_markup)
         return
     
     # Создаем ссылки на поиск товаров
@@ -380,7 +381,7 @@ async def show_cart(query, context):
     
     total = 0
     items_count = 0
-    cart_text = "🛒 *Ваша корзина:*\n\n"
+    cart_text = "🛒 Ваша корзина:\n\n"
     
     for link_info in product_links:
         item_total = link_info['price'] * link_info['quantity']
@@ -391,22 +392,22 @@ async def show_cart(query, context):
             product_name = product_name[:27] + "..."
         cart_text += f"• {product_name}\n  {link_info['quantity']} × {link_info['price']} ₽ = {item_total} ₽\n"
     
-    cart_text += f"\n💵 *Итого:* {total} ₽"
-    cart_text += f"\n📦 *Товаров:* {items_count} шт."
+    cart_text += f"\n💵 Итого: {total} ₽"
+    cart_text += f"\n📦 Товаров: {items_count} шт."
     
     instruction_text = """
-📋 *Инструкция по добавлению в корзину Ozon:*
+📋 Инструкция по добавлению в корзину Ozon:
 
-1. *Поочередно перейдите по ссылкам ниже*
-2. *На странице поиска Ozon:*
+1. Поочередно перейдите по ссылкам ниже
+2. На странице поиска Ozon:
    - Найдите нужный товар по артикулу
    - Нажмите кнопку «В корзину»
    - Установите нужное количество
-3. *После добавления всех товаров:*
+3. После добавления всех товаров:
    - Перейдите в корзину Ozon
    - Завершите оформление заказа
 
-🔍 *Ссылки на поиск товаров в Ozon:*
+🔍 Ссылки на поиск товаров в Ozon:
 """
     
     message_text = f"{cart_text}\n{instruction_text}"
@@ -431,7 +432,8 @@ async def show_cart(query, context):
     
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text(message_text, reply_markup=reply_markup, parse_mode='Markdown')
+    # Убираем parse_mode='Markdown' чтобы избежать ошибок форматирования
+    await query.edit_message_text(message_text, reply_markup=reply_markup)
 
 async def clear_cart(query, context):
     """Очищает корзину полностью"""
@@ -442,7 +444,7 @@ async def clear_cart(query, context):
     ]
     reply_markup = InlineKeyboardMarkup(keyboard)
     
-    await query.edit_message_text("🗑️ *Корзина очищена*", reply_markup=reply_markup, parse_mode='Markdown')
+    await query.edit_message_text("🗑️ Корзина очищена", reply_markup=reply_markup)
 
 async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Обработчик callback запросов от кнопок"""
