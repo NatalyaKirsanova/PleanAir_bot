@@ -65,7 +65,7 @@ class OzonSellerAPI:
                 logger.error("❌ Нет товаров в ответе")
                 return None
             
-            # Получаем product_id для запроса цен
+            # Получаем product_id для запроса цен и описаний
             product_ids = [item['product_id'] for item in items if 'product_id' in item]
             logger.info(f"🔍 Получено {len(product_ids)} product_id")
             
@@ -76,6 +76,10 @@ class OzonSellerAPI:
             # 2. Получаем цены через v5/product/info/prices
             logger.info("🔍 Получаем цены через v5/product/info/prices...")
             prices_data = self._get_products_prices_v5(product_ids)
+            
+            # 3. Получаем описания товаров через v2/product/info/list
+            logger.info("🔍 Получаем описания товаров...")
+            descriptions_data = self._get_products_descriptions_v2(product_ids)
         
             # Формируем итоговый список товаров
             products = []
@@ -87,9 +91,10 @@ class OzonSellerAPI:
                     if not product_id:
                         continue
                 
-                    # Используем базовые данные
-                    name = offer_id or f"Товар {product_id}"
-                    description = f"Артикул: {offer_id}" if offer_id else f"ID: {product_id}"
+                    # Получаем название товара из описаний
+                    product_info = descriptions_data.get(product_id, {})
+                    name = product_info.get('name', offer_id or f"Товар {product_id}")
+                    description = product_info.get('description', f"Артикул: {offer_id}")
                 
                     # Получаем реальную цену из v5
                     price = self._extract_price_from_v5(prices_data.get(product_id, {}))
@@ -170,6 +175,54 @@ class OzonSellerAPI:
         
         except Exception as e:
             logger.error(f"❌ Ошибка получения цен v5: {e}")
+            return {}
+    
+    def _get_products_descriptions_v2(self, product_ids):
+        """Получает описания товаров через v2/product/info/list"""
+        descriptions_data = {}
+        
+        if not product_ids:
+            return descriptions_data
+            
+        try:
+            for i in range(0, len(product_ids), 10):
+                batch_ids = product_ids[i:i+10]
+            
+                info_response = requests.post(
+                    "https://api-seller.ozon.ru/v2/product/info/list",
+                    headers=self.headers,
+                    json={
+                        "product_id": batch_ids
+                    },
+                    timeout=10
+                )
+            
+                if info_response.status_code == 200:
+                    info_result = info_response.json()
+                    items = info_result.get('result', {}).get('items', [])
+                    logger.info(f"📝 Получены описания для {len(items)} товаров")
+                
+                    for item in items:
+                        product_id = item.get('id')
+                        if product_id:
+                            name = item.get('name', '')
+                            description = item.get('description', '')
+                            
+                            # Если описание слишком длинное, обрезаем его
+                            if description and len(description) > 200:
+                                description = description[:197] + "..."
+                            
+                            descriptions_data[product_id] = {
+                                'name': name,
+                                'description': description
+                            }
+                else:
+                    logger.warning(f"⚠️ Ошибка получения описаний v2: {info_response.status_code}")
+        
+            return descriptions_data
+        
+        except Exception as e:
+            logger.error(f"❌ Ошибка получения описаний v2: {e}")
             return {}
     
     def _extract_price_from_v5(self, price_item):
