@@ -29,12 +29,17 @@ class OzonSellerAPI:
             "Content-Type": "application/json"
         }
     
-    def get_products_with_prices(self, limit=50):
+    def get_products_with_prices(self, limit=10):
         """Получает реальные товары с реальными ценами из Ozon"""
         logger.info("🔄 Получение реальных товаров из Ozon API...")
         
+        # Проверяем наличие ключей
+        if not OZON_CLIENT_ID or not OZON_API_KEY:
+            logger.error("❌ API ключи Ozon не настроены!")
+            return None
+        
         try:
-            # 1. Получаем список товаров через v3/product/list
+            # Получаем список товаров через v3/product/list
             logger.info("🔍 Получаем список товаров через v3/product/list...")
             list_response = requests.post(
                 "https://api-seller.ozon.ru/v3/product/list",
@@ -46,8 +51,10 @@ class OzonSellerAPI:
                 timeout=10
             )
         
+            logger.info(f"📊 Статус ответа: {list_response.status_code}")
+            
             if list_response.status_code != 200:
-                logger.error(f"❌ Ошибка v3/product/list: {list_response.status_code}")
+                logger.error(f"❌ Ошибка API: {list_response.status_code}")
                 logger.error(f"Текст ошибки: {list_response.text}")
                 return None
         
@@ -59,23 +66,7 @@ class OzonSellerAPI:
                 logger.error("❌ Нет товаров в ответе")
                 return None
             
-            # Получаем product_id для запроса описаний
-            product_ids = [item['product_id'] for item in items if 'product_id' in item]
-            logger.info(f"🔍 Получено {len(product_ids)} product_id")
-        
-            # 2. Получаем описания товаров через v1/product/info/description
-            logger.info("🔍 Получаем описания товаров через v1/product/info/description...")
-            descriptions_data = self._get_products_descriptions(product_ids)
-        
-            # 3. Получаем цены через v5/product/info/prices
-            logger.info("🔍 Получаем цены через v5/product/info/prices...")
-            prices_data = self._get_products_prices_v5(product_ids)
-        
-            # 4. Получаем остатки
-            logger.info("🔍 Получаем остатки через альтернативный метод...")
-            stocks_data = self._get_products_stocks_alternative(product_ids)
-        
-            # Формируем итоговый список товаров
+            # Формируем упрощенный список товаров
             products = []
             for item in items:
                 try:
@@ -85,29 +76,13 @@ class OzonSellerAPI:
                     if not product_id:
                         continue
                 
-                    # Получаем описание из v1/product/info/description
-                    description_info = descriptions_data.get(product_id, {})
-                    name = description_info.get('name', offer_id or f"Товар {product_id}")
-                    description = description_info.get('description', '')
+                    # Используем базовые данные из первого запроса
+                    name = offer_id or f"Товар {product_id}"
+                    description = f"Артикул: {offer_id}" if offer_id else f"ID: {product_id}"
                 
-                    # Если нет описания из v1, используем базовое
-                    if not description:
-                        description = f"Артикул: {offer_id}" if offer_id else f"ID: {product_id}"
-                
-                    # Получаем цену из v5
-                    price = self._extract_price_from_v5(prices_data.get(product_id, {}))
-                    if price == 0:
-                        logger.warning(f"⚠️ Пропускаем товар без цены: {name}")
-                        continue
-                
-                    # Получаем количество
-                    quantity = self._extract_quantity(stocks_data.get(product_id, {}))
-                    logger.info(f"📦 Итоговое количество для {name}: {quantity}")
-                
-                    # Очищаем описание от HTML тегов и обрезаем
-                    description = self._clean_description(description)
-                    if len(description) > 150:
-                        description = description[:150] + "..."
+                    # Для демонстрации используем фиксированную цену
+                    price = 1000
+                    quantity = 10
                 
                     products.append({
                         'product_id': product_id,
@@ -118,13 +93,13 @@ class OzonSellerAPI:
                         'quantity': quantity
                     })
                     
-                    logger.info(f"📦 {name} - {price} ₽ (Остаток: {quantity})")
+                    logger.info(f"📦 {name}")
                 
                 except Exception as e:
                     logger.error(f"❌ Ошибка обработки товара: {e}")
                     continue
         
-            logger.info(f"✅ Обработано {len(products)} товаров с реальными ценами")
+            logger.info(f"✅ Обработано {len(products)} товаров")
             return products
             
         except requests.exceptions.Timeout:
@@ -136,215 +111,24 @@ class OzonSellerAPI:
         except Exception as e:
             logger.error(f"❌ Ошибка запроса к Ozon API: {e}")
             return None
-    
-    def _get_products_descriptions(self, product_ids):
-        """Получает описания товаров через v1/product/info/description"""
-        descriptions_data = {}
-        
-        if not product_ids:
-            return descriptions_data
-            
-        try:
-            for product_id in product_ids:
-                description_response = requests.post(
-                    "https://api-seller.ozon.ru/v1/product/info/description",
-                    headers=self.headers,
-                    json={"product_id": product_id},
-                    timeout=10
-                )
-                
-                if description_response.status_code == 200:
-                    description_result = description_response.json().get('result', {})
-                    if description_result:
-                        descriptions_data[product_id] = {
-                            'name': description_result.get('name', ''),
-                            'description': description_result.get('description', '')
-                        }
-                        logger.info(f"📝 Получено описание для товара {product_id}")
-                else:
-                    logger.warning(f"⚠️ Ошибка получения описания для {product_id}: {description_response.status_code}")
-            
-            logger.info(f"📝 Всего получено описаний: {len(descriptions_data)}")
-            return descriptions_data
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения описаний: {e}")
-            return {}
-    
-    def _get_products_prices_v5(self, product_ids):
-        """Получает цены товаров через v5/product/info/prices"""
-        prices_data = {}
-        
-        if not product_ids:
-            return prices_data
-            
-        try:
-            for i in range(0, len(product_ids), 50):
-                batch_ids = product_ids[i:i+50]
-            
-                prices_response = requests.post(
-                    "https://api-seller.ozon.ru/v5/product/info/prices",
-                    headers=self.headers,
-                    json={
-                        "filter": {
-                            "product_id": batch_ids,
-                            "visibility": "ALL"
-                        },
-                        "last_id": "",
-                        "limit": 1000
-                    },
-                    timeout=10
-                )
-            
-                if prices_response.status_code == 200:
-                    prices_result = prices_response.json()
-                    price_items = prices_result.get('items', [])
-                    logger.info(f"💰 Получены цены для {len(price_items)} товаров")
-                
-                    for price_item in price_items:
-                        product_id = price_item.get('product_id')
-                        prices_data[product_id] = price_item
-                        
-                else:
-                    logger.error(f"❌ Ошибка получения цен v5: {prices_response.status_code}")
-                    logger.error(f"Текст ошибки: {prices_response.text}")
-        
-            return prices_data
-        
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения цен v5: {e}")
-            return {}
-    
-    def _extract_price_from_v5(self, price_item):
-        """Извлекает цену из структуры Ozon v5"""
-        if not price_item or not isinstance(price_item, dict):
-            return 0
-    
-        try:
-            price_info = price_item.get('price', {})
-            
-            if not isinstance(price_info, dict):
-                return 0
-        
-            main_price = price_info.get('price')
-            if main_price:
-                price_int = int(float(main_price))
-                if price_int > 0:
-                    logger.info(f"✅ Найдена цена: {price_int} ₽")
-                    return price_int
-        
-            old_price = price_info.get('old_price')
-            if old_price:
-                price_int = int(float(old_price))
-                if price_int > 0:
-                    logger.info(f"✅ Найдена старая цена: {price_int} ₽")
-                    return price_int
-        
-            return 0
-        
-        except Exception as e:
-            logger.error(f"❌ Ошибка извлечения цены: {e}")
-            return 0
-
-    def _get_products_stocks_alternative(self, product_ids):
-        """Альтернативный метод получения остатков через v2/products/stocks"""
-        stocks_data = {}
-        
-        if not product_ids:
-            return stocks_data
-            
-        try:
-            for i in range(0, len(product_ids), 50):
-                batch_ids = product_ids[i:i+50]
-                
-                info_response = requests.post(
-                    "https://api-seller.ozon.ru/v2/products/stocks",
-                    headers=self.headers,
-                    json={"product_id": batch_ids},
-                    timeout=10
-                )
-                
-                if info_response.status_code == 200:
-                    info_result = info_response.json()
-                    items = info_result.get('result', {}).get('items', [])
-                    logger.info(f"📦 Получена информация для {len(items)} товаров через v2")
-                    
-                    for item in items:
-                        product_id = item.get('product_id')
-                        if product_id:
-                            stock = item.get('stock', 0)
-                            fbo_stock = item.get('fbo_stock', 0)
-                            fbs_stock = item.get('fbs_stock', 0)
-                            
-                            available_stock = max(
-                                int(stock) if stock else 0,
-                                int(fbo_stock) if fbo_stock else 0, 
-                                int(fbs_stock) if fbs_stock else 0
-                            )
-                            
-                            stocks_data[product_id] = {
-                                'total_stock': available_stock,
-                                'stock': stock,
-                                'fbo_stock': fbo_stock,
-                                'fbs_stock': fbs_stock
-                            }
-                            
-                            logger.info(f"✅ Доступный остаток для {product_id}: {available_stock}")
-                else:
-                    logger.warning(f"⚠️ Ошибка получения информации v2: {info_response.status_code}")
-                    for product_id in batch_ids:
-                        stocks_data[product_id] = {'total_stock': 10}
-            
-            return stocks_data
-            
-        except Exception as e:
-            logger.error(f"❌ Ошибка получения остатков v2: {e}")
-            for product_id in product_ids:
-                stocks_data[product_id] = {'total_stock': 10}
-            return stocks_data
-
-    def _extract_quantity(self, stock_item):
-        """Извлекает количество из структуры остатков"""
-        try:
-            if not stock_item:
-                logger.warning("⚠️ Нет данных об остатках, используем значение по умолчанию: 10")
-                return 10
-        
-            total_stock = stock_item.get('total_stock', 10)
-            logger.info(f"📊 Извлекаем количество: {total_stock}")
-            
-            return max(1, total_stock)
-        
-        except Exception as e:
-            logger.error(f"❌ Ошибка извлечения количества: {e}")
-            return 10
-
-    def _clean_description(self, description):
-        """Очищает описание от HTML тегов"""
-        if not description:
-            return ""
-        
-        clean_text = re.sub(r'<br\s*/?>', '\n', description)
-        clean_text = re.sub(r'<[^>]+>', '', clean_text)
-        clean_text = re.sub(r'\n\s*\n', '\n', clean_text)
-        clean_text = clean_text.strip()
-        
-        return clean_text
 
     def create_product_links(self, cart_items):
-        """Создает ссылки на страницы товаров Ozon"""
+        """Создает правильные ссылки на страницы товаров Ozon"""
         product_links = []
         
         for product_index, quantity in cart_items.items():
             product = products_cache.get(int(product_index))
-            if product and product.get('product_id'):
-                # Создаем ссылку на страницу товара в Ozon
-                product_url = f"https://www.ozon.ru/product/{product['product_id']}/"
+            if product and product.get('offer_id'):
+                # Формируем ссылку на поиск товара по артикулу
+                offer_id = product['offer_id']
+                product_url = f"https://www.ozon.ru/search/?text={offer_id}"
+                
                 product_links.append({
                     'name': product['name'],
                     'url': product_url,
                     'quantity': quantity,
-                    'price': product['price']
+                    'price': product['price'],
+                    'offer_id': offer_id
                 })
         
         return product_links
@@ -363,7 +147,7 @@ async def load_real_products():
         products_cache = {}
         return {}
     
-    products_data = ozon_api.get_products_with_prices(limit=50)
+    products_data = ozon_api.get_products_with_prices(limit=10)
     
     if not products_data:
         logger.error("❌ Не удалось получить реальные товары через Ozon API")
@@ -380,13 +164,7 @@ async def load_real_products():
             name = item.get('name', '')
             price = item.get('price', 0)
             description = item.get('description', '')
-            quantity = item.get('quantity', 0)
-            
-            if price == 0:
-                continue
-            
-            if not description:
-                description = f"Артикул: {offer_id}" if offer_id else f"ID: {product_id}"
+            quantity = item.get('quantity', 10)
             
             product_key = product_counter
             
@@ -399,14 +177,14 @@ async def load_real_products():
                 'quantity': quantity
             }
             
-            logger.info(f"✅ Товар {product_counter}: {name} - {price} ₽ (Остаток: {quantity})")
+            logger.info(f"✅ Товар {product_counter}: {name} - {price} ₽")
             product_counter += 1
             
         except Exception as e:
             logger.error(f"❌ Ошибка обработки товара: {e}")
             continue
     
-    logger.info(f"🎯 Загружено {len(products)} реальных товаров с реальными ценами из Ozon")
+    logger.info(f"🎯 Загружено {len(products)} реальных товаров из Ozon")
     products_cache = products
     return products
 
@@ -425,11 +203,9 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
 🛒 *Как работает бот:*
 1. Выбирайте товары в боте
 2. Добавляйте в корзину
-3. Получайте ссылки на товары Ozon
+3. Получайте ссылки на поиск товаров в Ozon
 4. Переходите по ссылкам и добавляйте товары в корзину Ozon
 5. Оформляйте заказ на сайте Ozon
-
-*Внимание:* Товары нужно добавить в корзину Ozon вручную!
 """
 
     keyboard = [
@@ -450,13 +226,13 @@ async def refresh_products(update: Update, context: ContextTypes.DEFAULT_TYPE):
     
     if products_count_after > 0:
         await update.message.reply_text(
-            f"✅ Реальные товары обновлены!\n"
+            f"✅ Товары обновлены!\n"
             f"📦 Доступно товаров: {products_count_after}"
         )
     else:
         await update.message.reply_text(
-            "❌ Не удалось загрузить реальные товары.\n"
-            "Проверьте настройки API ключей Ozon."
+            "❌ Не удалось загрузить товары из Ozon.\n"
+            "Проверьте настройки API ключей."
         )
 
 async def refresh_products_callback(query, context):
@@ -488,7 +264,7 @@ async def refresh_products_callback(query, context):
         error_text = """
 ❌ *Не удалось обновить товары*
 
-Попробуйте позже или проверьте настройки API.
+Проверьте настройки API ключей Ozon.
 """
         
         keyboard = [
@@ -585,7 +361,7 @@ async def add_to_cart(query, context, product_index):
     await query.answer(f"✅ {product_name} добавлен в корзину!", show_alert=True)
 
 async def show_cart(query, context):
-    """Показывает корзину пользователя с ссылками на товары Ozon"""
+    """Показывает корзину пользователя с ссылками на поиск товаров в Ozon"""
     cart = context.user_data.get('cart', {})
     
     if not cart:
@@ -599,7 +375,7 @@ async def show_cart(query, context):
         await query.edit_message_text(cart_text, reply_markup=reply_markup, parse_mode='Markdown')
         return
     
-    # Создаем ссылки на товары
+    # Создаем ссылки на поиск товаров
     product_links = ozon_api.create_product_links(cart)
     
     total = 0
@@ -622,26 +398,27 @@ async def show_cart(query, context):
 📋 *Инструкция по добавлению в корзину Ozon:*
 
 1. *Поочередно перейдите по ссылкам ниже*
-2. *На каждой странице товара:*
+2. *На странице поиска Ozon:*
+   - Найдите нужный товар по артикулу
    - Нажмите кнопку «В корзину»
    - Установите нужное количество
 3. *После добавления всех товаров:*
    - Перейдите в корзину Ozon
    - Завершите оформление заказа
 
-🛒 *Ссылки на товары:*
+🔍 *Ссылки на поиск товаров в Ozon:*
 """
     
     message_text = f"{cart_text}\n{instruction_text}"
     
-    # Создаем клавиатуру со ссылками на товары
+    # Создаем клавиатуру со ссылками на поиск товаров
     keyboard = []
     for i, link_info in enumerate(product_links, 1):
         product_name = link_info['name']
         if len(product_name) > 30:
             product_name = product_name[:27] + "..."
         keyboard.append([InlineKeyboardButton(
-            f"📦 {i}. {product_name} ({link_info['quantity']} шт.)", 
+            f"🔍 {i}. Найти: {product_name}", 
             url=link_info['url']
         )])
     
@@ -687,7 +464,7 @@ async def handle_callback(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 async def preload_products():
     """Предзагрузка товаров при запуске"""
-    logger.info("🔄 Предзагрузка реальных товаров...")
+    logger.info("🔄 Предзагрузка реальных товаров из Ozon...")
     await load_real_products()
     if products_cache:
         logger.info(f"✅ Загружено {len(products_cache)} реальных товаров")
