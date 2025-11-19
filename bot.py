@@ -29,7 +29,7 @@ class OzonSellerAPI:
         }
     
     def get_products_with_prices(self, limit=10):
-        """Получает реальные товары из Ozon"""
+        """Получает реальные товары с реальными ценами из Ozon"""
         logger.info("🔄 Получение реальных товаров из Ozon API...")
         
         # Проверяем наличие ключей
@@ -38,7 +38,7 @@ class OzonSellerAPI:
             return None
         
         try:
-            # Получаем список товаров через v3/product/list
+            # 1. Получаем список товаров через v3/product/list
             logger.info("🔍 Получаем список товаров через v3/product/list...")
             list_response = requests.post(
                 "https://api-seller.ozon.ru/v3/product/list",
@@ -50,10 +50,10 @@ class OzonSellerAPI:
                 timeout=10
             )
         
-            logger.info(f"📊 Статус ответа: {list_response.status_code}")
+            logger.info(f"📊 Статус ответа v3/product/list: {list_response.status_code}")
             
             if list_response.status_code != 200:
-                logger.error(f"❌ Ошибка API: {list_response.status_code}")
+                logger.error(f"❌ Ошибка v3/product/list: {list_response.status_code}")
                 logger.error(f"Текст ошибки: {list_response.text}")
                 return None
         
@@ -65,12 +65,19 @@ class OzonSellerAPI:
                 logger.error("❌ Нет товаров в ответе")
                 return None
             
-            # Получаем информацию о товарах через v2/product/info/list
-            logger.info("🔍 Получаем информацию о товарах...")
+            # Получаем product_id для запроса цен
             product_ids = [item['product_id'] for item in items if 'product_id' in item]
-            products_info = self._get_products_info_v2(product_ids)
+            logger.info(f"🔍 Получено {len(product_ids)} product_id")
             
-            # Формируем список товаров
+            if not product_ids:
+                logger.error("❌ Не удалось получить product_id товаров")
+                return None
+        
+            # 2. Получаем цены через v5/product/info/prices
+            logger.info("🔍 Получаем цены через v5/product/info/prices...")
+            prices_data = self._get_products_prices_v5(product_ids)
+        
+            # Формируем итоговый список товаров
             products = []
             for item in items:
                 try:
@@ -80,16 +87,16 @@ class OzonSellerAPI:
                     if not product_id:
                         continue
                 
-                    # Получаем информацию о товаре
-                    product_info = products_info.get(product_id, {})
-                    name = product_info.get('name', offer_id or f"Товар {product_id}")
-                    price = product_info.get('price', 0)
-                    
-                    # Если нет цены, используем базовую
-                    if price == 0:
-                        price = 1000
-                    
+                    # Используем базовые данные
+                    name = offer_id or f"Товар {product_id}"
                     description = f"Артикул: {offer_id}" if offer_id else f"ID: {product_id}"
+                
+                    # Получаем реальную цену из v5
+                    price = self._extract_price_from_v5(prices_data.get(product_id, {}))
+                    if price == 0:
+                        logger.warning(f"⚠️ Пропускаем товар без цены: {name}")
+                        continue
+                
                     quantity = 10
                 
                     products.append({
@@ -107,7 +114,7 @@ class OzonSellerAPI:
                     logger.error(f"❌ Ошибка обработки товара: {e}")
                     continue
         
-            logger.info(f"✅ Обработано {len(products)} товаров")
+            logger.info(f"✅ Обработано {len(products)} товаров с реальными ценами")
             return products
             
         except requests.exceptions.Timeout:
@@ -119,59 +126,84 @@ class OzonSellerAPI:
         except Exception as e:
             logger.error(f"❌ Ошибка запроса к Ozon API: {e}")
             return None
-
-    def _get_products_info_v2(self, product_ids):
-        """Получает информацию о товарах через v2/product/info/list"""
-        products_info = {}
+    
+    def _get_products_prices_v5(self, product_ids):
+        """Получает цены товаров через v5/product/info/prices"""
+        prices_data = {}
         
         if not product_ids:
-            return products_info
+            return prices_data
             
         try:
-            for i in range(0, len(product_ids), 10):
-                batch_ids = product_ids[i:i+10]
+            # Разбиваем на группы по 50 product_id
+            for i in range(0, len(product_ids), 50):
+                batch_ids = product_ids[i:i+50]
             
-                info_response = requests.post(
-                    "https://api-seller.ozon.ru/v2/product/info/list",
+                prices_response = requests.post(
+                    "https://api-seller.ozon.ru/v5/product/info/prices",
                     headers=self.headers,
                     json={
-                        "product_id": batch_ids
+                        "filter": {
+                            "product_id": batch_ids,
+                            "visibility": "ALL"
+                        },
+                        "last_id": "",
+                        "limit": 1000
                     },
                     timeout=10
                 )
             
-                if info_response.status_code == 200:
-                    info_result = info_response.json()
-                    items = info_result.get('result', {}).get('items', [])
-                    logger.info(f"📋 Получена информация для {len(items)} товаров")
+                if prices_response.status_code == 200:
+                    prices_result = prices_response.json()
+                    price_items = prices_result.get('items', [])
+                    logger.info(f"💰 Получены цены для {len(price_items)} товаров")
                 
-                    for item in items:
-                        product_id = item.get('id')
-                        if product_id:
-                            # Получаем основную информацию
-                            name = item.get('name', '')
-                            
-                            # Пытаемся получить цену из разных мест
-                            price = 0
-                            if 'price' in item:
-                                price_str = item.get('price', '')
-                                try:
-                                    price = int(float(price_str))
-                                except:
-                                    price = 0
-                            
-                            products_info[product_id] = {
-                                'name': name,
-                                'price': price
-                            }
+                    for price_item in price_items:
+                        product_id = price_item.get('product_id')
+                        prices_data[product_id] = price_item
+                        
                 else:
-                    logger.warning(f"⚠️ Ошибка получения информации v2: {info_response.status_code}")
+                    logger.error(f"❌ Ошибка получения цен v5: {prices_response.status_code}")
+                    logger.error(f"Текст ошибки: {prices_response.text}")
         
-            return products_info
+            return prices_data
         
         except Exception as e:
-            logger.error(f"❌ Ошибка получения информации v2: {e}")
+            logger.error(f"❌ Ошибка получения цен v5: {e}")
             return {}
+    
+    def _extract_price_from_v5(self, price_item):
+        """Извлекает цену из структуры Ozon v5"""
+        if not price_item or not isinstance(price_item, dict):
+            return 0
+    
+        try:
+            price_info = price_item.get('price', {})
+            
+            if not isinstance(price_info, dict):
+                return 0
+        
+            # Основная цена
+            main_price = price_info.get('price')
+            if main_price:
+                price_int = int(float(main_price))
+                if price_int > 0:
+                    logger.info(f"✅ Найдена цена: {price_int} ₽")
+                    return price_int
+        
+            # Старая цена как запасной вариант
+            old_price = price_info.get('old_price')
+            if old_price:
+                price_int = int(float(old_price))
+                if price_int > 0:
+                    logger.info(f"✅ Найдена старая цена: {price_int} ₽")
+                    return price_int
+        
+            return 0
+        
+        except Exception as e:
+            logger.error(f"❌ Ошибка извлечения цены: {e}")
+            return 0
 
     def create_product_link(self, product):
         """Создает ссылку на страницу товара в Ozon"""
@@ -232,7 +264,7 @@ async def load_real_products():
             logger.error(f"❌ Ошибка обработки товара: {e}")
             continue
     
-    logger.info(f"🎯 Загружено {len(products)} реальных товаров из Ozon")
+    logger.info(f"🎯 Загружено {len(products)} реальных товаров с реальными ценами из Ozon")
     products_cache = products
     return products
 
